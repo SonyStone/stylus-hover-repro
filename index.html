@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stylus hover repro</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0; padding: 12px; max-width: 900px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  #status { font-size: 26px; font-weight: bold; padding: 12px; border-radius: 8px; color: #fff; background: #777; }
+  #status.ok { background: #1a7f37; }
+  #status.bad { background: #cf222e; }
+  #pad { position: relative; height: 280px; margin: 12px 0; border: 2px dashed #888; background: #f6f8fa;
+         touch-action: none; overflow: hidden; user-select: none; }
+  #pad p { margin: 8px; color: #666; }
+  #dot { position: absolute; width: 28px; height: 28px; margin: -14px; border-radius: 50%;
+         background: #0969da; pointer-events: none; display: none; }
+  #dot.down { background: #cf222e; }
+  button { font-size: 18px; padding: 14px 20px; margin: 4px 4px 4px 0; border: 2px solid #888; border-radius: 6px; background: #eee; }
+  .hov:hover { background: #ffd33d; border-color: #9a6700; }
+  #log { font: 12px/1.35 ui-monospace, monospace; white-space: pre; overflow-x: auto; background: #111; color: #ddd;
+         padding: 8px; min-height: 120px; }
+  #env { font: 12px ui-monospace, monospace; color: #555; white-space: pre-wrap; word-break: break-all; }
+  li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<h1>Chrome Android: stylus hover stops after file chooser / PWA switch</h1>
+
+<div id="status">Stylus hover: not received yet — hover the pen over the gray area</div>
+
+<div id="pad"><p>Hover the stylus here without touching. Blue circle = hover, red = contact.</p><div id="dot"></div></div>
+
+<div>
+  <button id="open">Step 2: open the file chooser, then cancel it</button>
+  <input type="file" id="file" hidden>
+</div>
+<div>
+  <button class="hov">Hover me (turns yellow on :hover)</button>
+  <button class="hov">Hover me too</button>
+</div>
+
+<h2>Event log (window, capture phase)</h2>
+<div id="log"></div>
+
+<h2>Steps to reproduce</h2>
+<p><b>A. File chooser</b></p>
+<ol>
+  <li>Open this page in Chrome on an Android tablet with a hovering stylus (EMR / USI).</li>
+  <li>Hover the stylus over the gray area without touching. The indicator turns green ("receiving"), the blue circle follows the pen.</li>
+  <li>Tap "open the file chooser" and cancel the picker (picking a file has the same effect).</li>
+  <li>Hover the stylus again.</li>
+</ol>
+<p><b>B. Installed app (PWA)</b></p>
+<ol>
+  <li>Chrome menu → Add to home screen → Install. Open the installed app and hover: hover is never received.</li>
+  <li>Alternatively, with the app installed, switch between the installed app and this page in a Chrome tab: hover stops in the tab too.</li>
+</ol>
+<p><b>Expected:</b> <code>pointermove</code> events with <code>pointerType=pen, buttons=0</code> keep arriving while the pen hovers.</p>
+<p><b>Actual:</b> hover events stop for good in this tab. The pen appears only on contact:
+  <code>pointerover</code> + <code>pointerdown</code> in the same millisecond, and <code>pointerout</code> + <code>pointerleave</code>
+  with <code>relatedTarget=null</code> on every lift. Each contact gets a new <code>pointerId</code>. The element that was under the
+  pen stays in <code>:hover</code> (yellow button). Reload, fullscreen, switching tabs and rotation do not help; only a new tab does.
+  Switching apps through the Recents screen does not trigger it. Android itself still delivers hover
+  (<code>getevent</code> shows ABS_DISTANCE, <code>dumpsys input</code> lists the Chrome window in <code>hoveringPointers</code>).</p>
+
+<div id="env"></div>
+
+<script>
+  const status = document.getElementById('status');
+  const pad = document.getElementById('pad');
+  const dot = document.getElementById('dot');
+  const logEl = document.getElementById('log');
+  const file = document.getElementById('file');
+  let hoverCount = 0, lastHover = 0;
+  const entries = [];
+
+  function log(text) {
+    const last = entries[0];
+    if (last && last.text === text) last.n++;
+    else entries.unshift({ time: new Date().toISOString().slice(11, 23), text, n: 1 });
+    entries.length = Math.min(entries.length, 30);
+    logEl.textContent = entries.map(e => `${e.time}  ${e.text}${e.n > 1 ? `  ×${e.n}` : ''}`).join('\n');
+  }
+
+  for (const type of ['pointerover', 'pointerenter', 'pointermove', 'pointerdown', 'pointerup', 'pointercancel', 'pointerout', 'pointerleave']) {
+    window.addEventListener(type, e => {
+      const related = /over|out|enter|leave/.test(type) ? ` relatedTarget=${e.relatedTarget ? 'yes' : 'null'}` : '';
+      log(`${type.padEnd(13)} ${e.pointerType.padEnd(5)} id=${e.pointerId} buttons=${e.buttons}${related}`);
+      if (e.pointerType !== 'pen') return;
+      if (type === 'pointermove' && e.buttons === 0) { hoverCount++; lastHover = performance.now(); }
+      if (type === 'pointerout' || type === 'pointercancel') { dot.style.display = 'none'; return; }
+      const r = pad.getBoundingClientRect();
+      dot.style.display = 'block';
+      dot.style.left = (e.clientX - r.left) + 'px';
+      dot.style.top = (e.clientY - r.top) + 'px';
+      dot.classList.toggle('down', e.buttons !== 0);
+    }, { capture: true });
+    // Chrome skips enter/leave dispatch unless a node in the document listens for them.
+    if (/enter|leave/.test(type)) document.addEventListener(type, () => {});
+  }
+
+  setInterval(() => {
+    if (!hoverCount) return;
+    const ago = (performance.now() - lastHover) / 1000;
+    const ok = ago < 1;
+    status.className = ok ? 'ok' : 'bad';
+    status.textContent = ok
+      ? `Stylus hover: receiving (${hoverCount} hover moves)`
+      : `Stylus hover: NOT received since ${ago.toFixed(0)} s (${hoverCount} hover moves total)`;
+  }, 200);
+
+  document.getElementById('open').onclick = () => { log('--- file chooser opened'); file.click(); };
+  file.addEventListener('cancel', () => log('--- file chooser cancelled'));
+  file.addEventListener('change', () => log('--- file chosen'));
+  document.addEventListener('visibilitychange', () => log(`--- visibility: ${document.visibilityState}`));
+
+  const env = document.getElementById('env');
+  const standalone = matchMedia('(display-mode: standalone)').matches;
+  env.textContent = `display-mode: ${standalone ? 'standalone (installed app)' : 'browser tab'}\nUA: ${navigator.userAgent}`;
+  navigator.userAgentData?.getHighEntropyValues(['fullVersionList', 'platformVersion', 'model']).then(d => {
+    const brands = d.fullVersionList.filter(b => !/Not/.test(b.brand)).map(b => `${b.brand} ${b.version}`).join(', ');
+    env.textContent += `\n${brands}; ${d.platform} ${d.platformVersion}; model: ${d.model || '-'}`;
+  });
+
+  navigator.serviceWorker?.register('sw.js');
+</script>
+</body>
+</html>
